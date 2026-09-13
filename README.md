@@ -24,3 +24,9 @@ Neon tables:
 - public.spot_supply_avwap_option_1m
 - public.spot_supply_avwap_option_score
 - public.spot_supply_avwap_heartbeat
+
+
+## Exact ATM CE entry enhancement
+The collector freezes the first completed ATM CE/PE minute where the 0–4 option score reaches >=3.
+The dashboard displays exact CE entry premium, score, confirmation time, spot-at-signal,
+spot +0.5% target and spot -0.5% stop.

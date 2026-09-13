@@ -43,6 +43,14 @@ def load_live(selected_date: date):
       l.target_hit_at AT TIME ZONE 'Asia/Kolkata' AS target_hit_at_ist,
       l.setup_state, l.updated_at AT TIME ZONE 'Asia/Kolkata' AS updated_at_ist,
 
+      s.option_entry_confirmed,
+      s.option_entry_time AT TIME ZONE 'Asia/Kolkata' AS option_entry_time_ist,
+      s.option_entry_score,
+      s.option_entry_ce_price,
+      s.option_entry_pe_price,
+      s.option_entry_spot_price,
+      s.option_entry_spot_target,
+      s.option_entry_spot_stop,
       s.score_5m, s.bullish_proxy_5m,
       s.score_15m, s.bullish_proxy_15m,
 
@@ -123,6 +131,33 @@ c5.metric("+0.5% Target Hit",len(targets))
 c6.metric("Entry Conversion",f"{100*len(entries)/max(1,len(breakouts)):.1f}%")
 
 st.divider()
+st.subheader("🔥 EXACT ATM CE OPTION ENTRIES")
+exact_entries = entries[entries["option_entry_confirmed"] == True].copy()
+if exact_entries.empty:
+    st.info("Waiting for live option score to reach ≥3.")
+else:
+    exact_entries["OPTION ENTRY TIME"]=pd.to_datetime(exact_entries["option_entry_time_ist"]).dt.strftime("%H:%M")
+    exact_entries["SCORE"]=pd.to_numeric(exact_entries["option_entry_score"],errors="coerce").astype("Int64")
+    exact_entries["ATM CE"]=pd.to_numeric(exact_entries["ce_strike"],errors="coerce").round(2)
+    exact_entries["EXACT CE ENTRY"]=pd.to_numeric(exact_entries["option_entry_ce_price"],errors="coerce").round(2)
+    exact_entries["SPOT @ SIGNAL"]=pd.to_numeric(exact_entries["option_entry_spot_price"],errors="coerce").round(2)
+    exact_entries["+0.5% TARGET"]=pd.to_numeric(exact_entries["option_entry_spot_target"],errors="coerce").round(2)
+    exact_entries["-0.5% STOP"]=pd.to_numeric(exact_entries["option_entry_spot_stop"],errors="coerce").round(2)
+    exact_entries["CE LIVE"]=pd.to_numeric(exact_entries["ce_current_price"],errors="coerce").round(2)
+    exact_entries["TARGET STATUS"]=exact_entries["target_hit"].map({True:"🎯 HIT",False:"ACTIVE"})
+    st.dataframe(
+        exact_entries[["symbol","OPTION ENTRY TIME","SCORE","ATM CE","EXACT CE ENTRY",
+                       "SPOT @ SIGNAL","+0.5% TARGET","-0.5% STOP","CE LIVE","TARGET STATUS"]]
+        .rename(columns={"symbol":"SYMBOL"}),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "EXACT CE ENTRY": st.column_config.NumberColumn("🔥 EXACT CE ENTRY",format="%.2f"),
+            "+0.5% TARGET": st.column_config.NumberColumn("🎯 SPOT TARGET",format="%.2f"),
+            "-0.5% STOP": st.column_config.NumberColumn("🛑 SPOT STOP",format="%.2f"),
+        },
+    )
+
 st.subheader("🚨 ENTRY CONFIRMED")
 
 if entries.empty:

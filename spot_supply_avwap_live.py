@@ -217,6 +217,14 @@ CREATE TABLE IF NOT EXISTS public.spot_supply_avwap_option_score (
     pe_oi_up_5m BOOLEAN,
     bullish_proxy_5m BOOLEAN,
 
+    option_entry_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+    option_entry_time TIMESTAMPTZ,
+    option_entry_score INTEGER,
+    option_entry_ce_price NUMERIC,
+    option_entry_pe_price NUMERIC,
+    option_entry_spot_price NUMERIC,
+    option_entry_spot_target NUMERIC,
+    option_entry_spot_stop NUMERIC,
     score_15m INTEGER,
     ce_premium_up_15m BOOLEAN,
     ce_oi_down_15m BOOLEAN,
@@ -229,6 +237,16 @@ CREATE TABLE IF NOT EXISTS public.spot_supply_avwap_option_score (
     PRIMARY KEY (trading_date, symbol)
 );
 
+
+
+ALTER TABLE public.spot_supply_avwap_option_score ADD COLUMN IF NOT EXISTS option_entry_confirmed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE public.spot_supply_avwap_option_score ADD COLUMN IF NOT EXISTS option_entry_time TIMESTAMPTZ;
+ALTER TABLE public.spot_supply_avwap_option_score ADD COLUMN IF NOT EXISTS option_entry_score INTEGER;
+ALTER TABLE public.spot_supply_avwap_option_score ADD COLUMN IF NOT EXISTS option_entry_ce_price NUMERIC;
+ALTER TABLE public.spot_supply_avwap_option_score ADD COLUMN IF NOT EXISTS option_entry_pe_price NUMERIC;
+ALTER TABLE public.spot_supply_avwap_option_score ADD COLUMN IF NOT EXISTS option_entry_spot_price NUMERIC;
+ALTER TABLE public.spot_supply_avwap_option_score ADD COLUMN IF NOT EXISTS option_entry_spot_target NUMERIC;
+ALTER TABLE public.spot_supply_avwap_option_score ADD COLUMN IF NOT EXISTS option_entry_spot_stop NUMERIC;
 
 CREATE TABLE IF NOT EXISTS public.spot_supply_avwap_heartbeat (
     service_name TEXT PRIMARY KEY,
@@ -336,14 +354,26 @@ ON CONFLICT(trading_date,symbol,option_type,candle_start) DO UPDATE SET
 UPSERT_OPTION_SCORE = """
 INSERT INTO public.spot_supply_avwap_option_score (
  trading_date,symbol,spot_entry_time,ce_strike,pe_strike,expiry,
+ option_entry_confirmed,option_entry_time,option_entry_score,option_entry_ce_price,option_entry_pe_price,
+ option_entry_spot_price,option_entry_spot_target,option_entry_spot_stop,
  score_5m,ce_premium_up_5m,ce_oi_down_5m,pe_premium_down_5m,pe_oi_up_5m,bullish_proxy_5m,
  score_15m,ce_premium_up_15m,ce_oi_down_15m,pe_premium_down_15m,pe_oi_up_15m,bullish_proxy_15m
 ) VALUES (
  %(trading_date)s,%(symbol)s,%(spot_entry_time)s,%(ce_strike)s,%(pe_strike)s,%(expiry)s,
+ %(option_entry_confirmed)s,%(option_entry_time)s,%(option_entry_score)s,%(option_entry_ce_price)s,%(option_entry_pe_price)s,
+ %(option_entry_spot_price)s,%(option_entry_spot_target)s,%(option_entry_spot_stop)s,
  %(score_5m)s,%(ce_premium_up_5m)s,%(ce_oi_down_5m)s,%(pe_premium_down_5m)s,%(pe_oi_up_5m)s,%(bullish_proxy_5m)s,
  %(score_15m)s,%(ce_premium_up_15m)s,%(ce_oi_down_15m)s,%(pe_premium_down_15m)s,%(pe_oi_up_15m)s,%(bullish_proxy_15m)s
 )
 ON CONFLICT(trading_date,symbol) DO UPDATE SET
+ option_entry_confirmed=public.spot_supply_avwap_option_score.option_entry_confirmed OR EXCLUDED.option_entry_confirmed,
+ option_entry_time=COALESCE(public.spot_supply_avwap_option_score.option_entry_time,EXCLUDED.option_entry_time),
+ option_entry_score=COALESCE(public.spot_supply_avwap_option_score.option_entry_score,EXCLUDED.option_entry_score),
+ option_entry_ce_price=COALESCE(public.spot_supply_avwap_option_score.option_entry_ce_price,EXCLUDED.option_entry_ce_price),
+ option_entry_pe_price=COALESCE(public.spot_supply_avwap_option_score.option_entry_pe_price,EXCLUDED.option_entry_pe_price),
+ option_entry_spot_price=COALESCE(public.spot_supply_avwap_option_score.option_entry_spot_price,EXCLUDED.option_entry_spot_price),
+ option_entry_spot_target=COALESCE(public.spot_supply_avwap_option_score.option_entry_spot_target,EXCLUDED.option_entry_spot_target),
+ option_entry_spot_stop=COALESCE(public.spot_supply_avwap_option_score.option_entry_spot_stop,EXCLUDED.option_entry_spot_stop),
  score_5m=COALESCE(EXCLUDED.score_5m,public.spot_supply_avwap_option_score.score_5m),
  ce_premium_up_5m=COALESCE(EXCLUDED.ce_premium_up_5m,public.spot_supply_avwap_option_score.ce_premium_up_5m),
  ce_oi_down_5m=COALESCE(EXCLUDED.ce_oi_down_5m,public.spot_supply_avwap_option_score.ce_oi_down_5m),
@@ -415,6 +445,7 @@ class State:
     target_price: float | None = None
     target_hit: bool = False
     target_hit_at: datetime | None = None
+    last_spot_price: float | None = None
 
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -438,6 +469,7 @@ class OptionState:
     cumulative_signed_volume_proxy: int = 0
     score_5m_done: bool = False
     score_15m_done: bool = False
+    option_entry_frozen: bool = False
 
 
 def ensure_schema():
@@ -915,6 +947,40 @@ class Collector:
         pe_oi_up = pe_m["oi"] is not None and int(pe_m["oi"]) > pe.entry_option_oi
 
         score = sum([ce_prem_up, ce_oi_down, pe_prem_down, pe_oi_up])
+
+        option_entry_confirmed = False
+        option_entry_time = None
+        option_entry_score = None
+        option_entry_ce_price = None
+        option_entry_pe_price = None
+        option_entry_spot_price = None
+        option_entry_spot_target = None
+        option_entry_spot_stop = None
+
+        if score >= 3 and not ce.option_entry_frozen:
+            spot_state = next(
+                (s for s in self.states.values() if s.instrument.symbol == symbol),
+                None
+            )
+            option_entry_confirmed = True
+            option_entry_time = common_end
+            option_entry_score = score
+            option_entry_ce_price = float(ce_m["close"])
+            option_entry_pe_price = float(pe_m["close"])
+            option_entry_spot_price = (
+                float(spot_state.last_spot_price)
+                if spot_state is not None and spot_state.last_spot_price is not None
+                else float(ce.spot_entry_price)
+            )
+            option_entry_spot_target = float(ce.spot_entry_price) * 1.005
+            option_entry_spot_stop = float(ce.spot_entry_price) * 0.995
+            ce.option_entry_frozen = True
+            pe.option_entry_frozen = True
+            LOG.warning(
+                "%s OPTION ENTRY CONFIRMED | %s | score=%d | CE %.2f @ %.2f | target %.2f | stop %.2f",
+                symbol, option_entry_time.strftime("%H:%M"), option_entry_score,
+                ce.strike, option_entry_ce_price, option_entry_spot_target, option_entry_spot_stop
+            )
         bullish_proxy = (
             int(ce_m["cumulative_signed_volume_proxy"] or 0) > 0
             and int(pe_m["cumulative_signed_volume_proxy"] or 0) < 0
@@ -935,7 +1001,7 @@ class Collector:
             proxy15 = bullish_proxy
             ce.score_15m_done = pe.score_15m_done = True
 
-        if score5 is None and score15 is None:
+        if score5 is None and score15 is None and not option_entry_confirmed:
             return
 
         row = {
@@ -945,6 +1011,14 @@ class Collector:
             "ce_strike": ce.strike,
             "pe_strike": pe.strike,
             "expiry": ce.expiry,
+            "option_entry_confirmed": option_entry_confirmed,
+            "option_entry_time": option_entry_time,
+            "option_entry_score": option_entry_score,
+            "option_entry_ce_price": option_entry_ce_price,
+            "option_entry_pe_price": option_entry_pe_price,
+            "option_entry_spot_price": option_entry_spot_price,
+            "option_entry_spot_target": option_entry_spot_target,
+            "option_entry_spot_stop": option_entry_spot_stop,
             "score_5m": score5,
             "ce_premium_up_5m": flags5[0] if flags5 else None,
             "ce_oi_down_5m": flags5[1] if flags5 else None,
@@ -1030,6 +1104,7 @@ class Collector:
         self.write(st,None)
 
     def process(self,st,ts,price,cumvol):
+        st.last_spot_price=price
         s3=aligned_start(ts,3)
         s60=aligned_start(ts,60)
         with st.lock:
