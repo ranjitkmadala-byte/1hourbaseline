@@ -17,6 +17,12 @@ st.caption(
     "ATM CE/PE option score at +5m and +15m"
 )
 
+st.success(
+    "FINAL RULE: ATM CE ENTRY = first option score ≥3 | "
+    "SPOT TARGET = AVWAP spot entry +0.5% | SPOT STOP = AVWAP spot entry -0.5% | "
+    "Exit 100% at whichever spot level occurs first."
+)
+
 if not DATABASE_URL:
     st.error("NEON_DATABASE_URL (or DATABASE_URL) is not configured.")
     st.stop()
@@ -131,32 +137,50 @@ c5.metric("+0.5% Target Hit",len(targets))
 c6.metric("Entry Conversion",f"{100*len(entries)/max(1,len(breakouts)):.1f}%")
 
 st.divider()
-st.subheader("🔥 EXACT ATM CE OPTION ENTRIES")
-exact_entries = entries[entries["option_entry_confirmed"] == True].copy()
-if exact_entries.empty:
-    st.info("Waiting for live option score to reach ≥3.")
+st.subheader("🔥 LIVE ATM CE TRADE PLAN")
+trade_plan = entries[entries["option_entry_confirmed"] == True].copy()
+
+if trade_plan.empty:
+    st.info("No ATM CE entry yet. Entry is valid only when the live option score first reaches ≥3.")
 else:
-    exact_entries["OPTION ENTRY TIME"]=pd.to_datetime(exact_entries["option_entry_time_ist"]).dt.strftime("%H:%M")
-    exact_entries["SCORE"]=pd.to_numeric(exact_entries["option_entry_score"],errors="coerce").astype("Int64")
-    exact_entries["ATM CE"]=pd.to_numeric(exact_entries["ce_strike"],errors="coerce").round(2)
-    exact_entries["EXACT CE ENTRY"]=pd.to_numeric(exact_entries["option_entry_ce_price"],errors="coerce").round(2)
-    exact_entries["SPOT @ SIGNAL"]=pd.to_numeric(exact_entries["option_entry_spot_price"],errors="coerce").round(2)
-    exact_entries["+0.5% TARGET"]=pd.to_numeric(exact_entries["option_entry_spot_target"],errors="coerce").round(2)
-    exact_entries["-0.5% STOP"]=pd.to_numeric(exact_entries["option_entry_spot_stop"],errors="coerce").round(2)
-    exact_entries["CE LIVE"]=pd.to_numeric(exact_entries["ce_current_price"],errors="coerce").round(2)
-    exact_entries["TARGET STATUS"]=exact_entries["target_hit"].map({True:"🎯 HIT",False:"ACTIVE"})
+    trade_plan["ENTRY TIME"] = pd.to_datetime(trade_plan["option_entry_time_ist"]).dt.strftime("%H:%M")
+    trade_plan["SCORE"] = pd.to_numeric(trade_plan["option_entry_score"], errors="coerce").astype("Int64")
+    trade_plan["ATM CE"] = pd.to_numeric(trade_plan["ce_strike"], errors="coerce").round(2)
+    trade_plan["CE ENTRY"] = pd.to_numeric(trade_plan["option_entry_ce_price"], errors="coerce").round(2)
+    trade_plan["SPOT @ ENTRY"] = pd.to_numeric(trade_plan["option_entry_spot_price"], errors="coerce").round(2)
+    trade_plan["TARGET +0.5%"] = pd.to_numeric(trade_plan["option_entry_spot_target"], errors="coerce").round(2)
+    trade_plan["STOP -0.5%"] = pd.to_numeric(trade_plan["option_entry_spot_stop"], errors="coerce").round(2)
+    trade_plan["CE LIVE"] = pd.to_numeric(trade_plan["ce_current_price"], errors="coerce").round(2)
+    trade_plan["CE RETURN %"] = (
+        100.0 * (
+            pd.to_numeric(trade_plan["ce_current_price"], errors="coerce")
+            / pd.to_numeric(trade_plan["option_entry_ce_price"], errors="coerce") - 1.0
+        )
+    ).round(2)
+    trade_plan["STATUS"] = trade_plan["target_hit"].map({True:"🎯 TARGET HIT", False:"🟢 ACTIVE"}).fillna("🟢 ACTIVE")
+
     st.dataframe(
-        exact_entries[["symbol","OPTION ENTRY TIME","SCORE","ATM CE","EXACT CE ENTRY",
-                       "SPOT @ SIGNAL","+0.5% TARGET","-0.5% STOP","CE LIVE","TARGET STATUS"]]
-        .rename(columns={"symbol":"SYMBOL"}),
+        trade_plan[[
+            "symbol","STATUS","ENTRY TIME","SCORE","ATM CE","CE ENTRY",
+            "SPOT @ ENTRY","TARGET +0.5%","STOP -0.5%","CE LIVE","CE RETURN %"
+        ]].rename(columns={"symbol":"SYMBOL"}),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "EXACT CE ENTRY": st.column_config.NumberColumn("🔥 EXACT CE ENTRY",format="%.2f"),
-            "+0.5% TARGET": st.column_config.NumberColumn("🎯 SPOT TARGET",format="%.2f"),
-            "-0.5% STOP": st.column_config.NumberColumn("🛑 SPOT STOP",format="%.2f"),
+            "SYMBOL": st.column_config.TextColumn("🔥 SYMBOL"),
+            "CE ENTRY": st.column_config.NumberColumn("🟢 EXACT CE ENTRY", format="₹%.2f"),
+            "SPOT @ ENTRY": st.column_config.NumberColumn("SPOT @ ENTRY", format="₹%.2f"),
+            "TARGET +0.5%": st.column_config.NumberColumn("🎯 SPOT TARGET +0.5%", format="₹%.2f"),
+            "STOP -0.5%": st.column_config.NumberColumn("🛑 SPOT STOP -0.5%", format="₹%.2f"),
+            "CE LIVE": st.column_config.NumberColumn("CE LIVE", format="₹%.2f"),
+            "CE RETURN %": st.column_config.NumberColumn("CE RETURN", format="%.2f%%"),
         },
     )
+
+st.warning(
+    "EXECUTION: Buy the displayed ATM CE at EXACT CE ENTRY when score first reaches ≥3. "
+    "Exit 100% when SPOT reaches TARGET +0.5% or STOP -0.5%, whichever occurs first."
+)
 
 st.subheader("🚨 ENTRY CONFIRMED")
 
